@@ -345,8 +345,10 @@ static void updateplugindir() {
     #ifdef _WINDOWS        
         _putenv(environment_string);
     #else
-        putenv(environment_string);
+        setenv("LIBMYSQL_PLUGIN_DIR", mym_directory, 1);
+        mxFree(mym_directory);
     #endif
+        
 
     // //Confirm Path
     // printf("Path:  %s\n", mym_directory); 
@@ -358,6 +360,24 @@ static void updateplugindir() {
     mxDestroyArray(mym_fileparts[1]);
     mxDestroyArray(mym_fileparts[2]);
 }
+
+/**********************************************************************
+ *cleanupConnections():  Close all native MySQL connections before the
+ *  MEX file is unloaded or MATLAB exits.
+ *
+ * Check the native pointer rather than isopen.  Error paths after
+ * mysql_init() can leave a valid MYSQL object while isopen is still false.
+ **********************************************************************/
+static void cleanupConnections() {
+    for (int i = 0; i < MAXCONN; ++i) {
+        if (c[i].conn != NULL) {
+            mysql_close(c[i].conn);
+            c[i].conn = NULL;
+        }
+        c[i].isopen = false;
+    }
+}
+
 /**********************************************************************
  *use32bitdims():   Check if dimensions should be read as 32-bit
  *  Get MYM_USE_32BIT_DIMS environment variable
@@ -378,8 +398,15 @@ static bool use32bitdims() {
  * return status information.
  **********************************************************************/
 void mexFunction(int nlhs, mxArray*plhs[], int nrhs, const mxArray*prhs[]) {
+    static bool atExitRegistered = false;
     int cid = 0;   // ID number of the current connection
     int jarg = 0;  // Number of first string arg: becomes 1 if id is specified
+
+    if (!atExitRegistered) {
+        mexAtExit(cleanupConnections);
+        atExitRegistered = true;
+    }
+
     /*********************************************************************/
     // show GPL license
     /*if (!runonce) {
