@@ -397,6 +397,27 @@ static bool use32bitdims() {
  * If an output argument is given, then we operate silently, and
  * return status information.
  **********************************************************************/
+/*
+ *  Consume the results of any remaining statements of a multi-statement query
+ *  (the connection uses CLIENT_MULTI_STATEMENTS). Leaving them pending makes
+ *  the next command fail with "Commands out of sync".
+ */
+static void drainResults(MYSQL* conn)
+{
+    while (mysql_more_results(conn)) {
+        int status = mysql_next_result(conn);
+        if (status > 0)
+            mexErrMsgTxt(mysql_error(conn));
+        if (status < 0)
+            break;
+        MYSQL_RES* extra = mysql_store_result(conn);
+        if (extra)
+            mysql_free_result(extra);
+        else if (mysql_field_count(conn))
+            mexErrMsgTxt(mysql_error(conn));
+    }
+}
+
 void mexFunction(int nlhs, mxArray*plhs[], int nrhs, const mxArray*prhs[]) {
     static bool atExitRegistered = false;
     int cid = 0;   // ID number of the current connection
@@ -933,6 +954,7 @@ void mexFunction(int nlhs, mxArray*plhs[], int nrhs, const mxArray*prhs[]) {
         if (!res) {
             if (!mysql_field_count(conn)) {
                 ulong nrows = (ulong)mysql_affected_rows(conn);
+                drainResults(conn);
                 if (nlhs<1)
                     return;
                 else {
@@ -952,6 +974,7 @@ void mexFunction(int nlhs, mxArray*plhs[], int nrhs, const mxArray*prhs[]) {
         if (nlhs<1) {
             fancyprint(res);
             mysql_free_result(res);
+            drainResults(conn);
             return;
         }
         //  If we are here, he wants output
@@ -1052,6 +1075,7 @@ void mexFunction(int nlhs, mxArray*plhs[], int nrhs, const mxArray*prhs[]) {
         mxFree(pr);
         mxFree(i_pr);
         mysql_free_result(res);
+        drainResults(conn);
     }
     else if (q==SERIALIZE) {
         if (debug)
