@@ -857,7 +857,15 @@ void mexFunction(int nlhs, mxArray*plhs[], int nrhs, const mxArray*prhs[]) {
                 nb += plen[i];
             }
             // create new query
-            char* nq = (char*)mxCalloc(2*nb+lengthOfQuery+1, sizeof(char));  // new query
+            // The escaped payloads replace the placeholder text. Allocate only
+            // the worst-case expansion required by mysql_real_escape_string;
+            // the previous lengthOfQuery+2*nb allocation also counted the
+            // placeholder text that is removed below.
+            size_t placeholderBytes = 0;
+            for (unsigned i = 0; i<nac; i++)
+                placeholderBytes += ps[i];
+            char* nq = (char*)mxCalloc(lengthOfQuery - placeholderBytes + 2*nb + 1,
+                                       sizeof(char));
             char* pnq = nq; // running pointer to new query
             const char* poq = query; // running pointer to old query
             for (unsigned i = 0; i<nac; i++) {
@@ -1014,6 +1022,7 @@ void mexFunction(int nlhs, mxArray*plhs[], int nrhs, const mxArray*prhs[]) {
 
         // Create temporary mxArray pointer array
         mxArray* tmpPr;
+        mxArray** fieldColumns = (mxArray**) mxMalloc(nfield*sizeof(mxArray*));
 
         //  Create the Matlab arrays for output        
         double **pr = (double**) mxMalloc(nfield*sizeof(double*));
@@ -1046,6 +1055,7 @@ void mexFunction(int nlhs, mxArray*plhs[], int nrhs, const mxArray*prhs[]) {
                 pr[j]=NULL;
             }
             mxSetField(plhs[0],0,f[j].name,tmpPr);
+            fieldColumns[j] = tmpPr;
         }
         //  Load the data into the cells
         mysql_data_seek(res, 0);
@@ -1062,29 +1072,25 @@ void mexFunction(int nlhs, mxArray*plhs[], int nrhs, const mxArray*prhs[]) {
                 } else if (can_convert(f[j].type)) {
                     pr[j][i] = field2num(row[j], f[j].type);
                 } else if ((f[j].type==FIELD_TYPE_BLOB) && (f[j].charsetnr==63)) {
-                    tmpPr=mxGetField(plhs[0],0,f[j].name);
-                    mxSetCell(tmpPr, i, deserialize(row[j], p_lengths[j]));
+                    mxSetCell(fieldColumns[j], i, deserialize(row[j], p_lengths[j]));
                 } else if ((f[j].type==FIELD_TYPE_STRING) && (f[j].flags & BINARY_FLAG)) {
-                    tmpPr=mxGetField(plhs[0],0,f[j].name);
                     mxArray *c;
-                    const uint8_t *p = (uint8_t *)row[j];
+                    const void *p = row[j];
                     c = mxCreateNumericMatrix (1, p_lengths[j], mxUINT8_CLASS, mxREAL);
-                    uint8_t *vro = (uint8_t*)mxGetData(c);
-                    for (int k=0; k < p_lengths[j]; k++) {
-                        vro[k] = p[k];
-                    }
-                    mxSetCell(tmpPr, i, c);
+                    if (p_lengths[j] > 0)
+                        memcpy(mxGetData(c), p, p_lengths[j]);
+                    mxSetCell(fieldColumns[j], i, c);
                 } else {
-                    tmpPr=mxGetField(plhs[0],0,f[j].name);
                     char* text = hex2char(row[j], p_lengths[j]);
                     mxArray *c = mxCreateString(text);
                     mxFree(text);
-                    mxSetCell(tmpPr, i, c);
+                    mxSetCell(fieldColumns[j], i, c);
                 }
             }
         }
         mxFree(pr);
         mxFree(i_pr);
+        mxFree(fieldColumns);
         mysql_free_result(res);
         drainResults(conn);
     }
