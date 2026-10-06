@@ -647,9 +647,6 @@ void mexFunction(int nlhs, mxArray*plhs[], int nrhs, const mxArray*prhs[]) {
         ////////////////////////
         if (!isopen)
             mexErrMsgTxt("Not connected");
-        if (mysql_ping(conn)) {
-            closeConnectionWithError(conn, isopen, "MySQL:Error");
-        }
         char*db = NULL;
         if (!strcasecmp(query, "use")) {
             if (nrhs>=2)
@@ -665,7 +662,7 @@ void mexFunction(int nlhs, mxArray*plhs[], int nrhs, const mxArray*prhs[]) {
         else
             mexErrMsgTxt("How did we get here?  Internal logic error!");
         if (mysql_select_db(conn, db))
-            mexErrMsgTxt(mysql_error(conn));
+            closeConnectionWithError(conn, isopen, "MySQL:Error");
         if (nlhs<1)
             mexPrintf("Current database is \"%s\"\n", db);
         else {
@@ -762,9 +759,6 @@ void mexFunction(int nlhs, mxArray*plhs[], int nrhs, const mxArray*prhs[]) {
         //  Check that we have a valid connection
         if (!isopen)
             mexErrMsgTxt("Not connected");
-        if (mysql_ping(conn)) {
-            closeConnectionWithError(conn, isopen, "MySQL:Error");
-        }
         //******************PLACEHOLDER PROCESSING******************
         // global placeholders variables and constant
         const unsigned expectedNumberOfPlaceholders = nrhs-jarg-1;   // expected number of placeholders
@@ -945,10 +939,10 @@ void mexFunction(int nlhs, mxArray*plhs[], int nrhs, const mxArray*prhs[]) {
         //  Execute the query (data stays on server)
         if (nac!=0) {
             if (mysql_real_query(conn, query, lengthOfQuery))
-                mexErrMsgTxt(mysql_error(conn));
+                closeConnectionWithError(conn, isopen, "MySQL:Error");
         }
         else if (mysql_query(conn, query))
-            mexErrMsgTxt(mysql_error(conn));
+            closeConnectionWithError(conn, isopen, "MySQL:Error");
         //  Download the data from server into our memory
         //  We need to be careful to deallocate res before returning.
         //  Matlab's allocation routines return instantly if there is not
