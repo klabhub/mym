@@ -339,16 +339,19 @@ static void updateplugindir() {
     mexCallMATLAB(3, mym_fileparts, 1, mym_path, "fileparts");
     mym_directory = getstring(mym_fileparts[0]);
 
-    char environment_string[1000];
-    strcpy(environment_string,"LIBMYSQL_PLUGIN_DIR=");
-    strcat(environment_string,mym_directory);
     #ifdef _WINDOWS        
-        _putenv(environment_string);
+        if (_putenv_s("LIBMYSQL_PLUGIN_DIR", mym_directory) != 0) {
+            mxFree(mym_directory);
+            mexErrMsgTxt("Unable to set LIBMYSQL_PLUGIN_DIR");
+        }
     #else
-        setenv("LIBMYSQL_PLUGIN_DIR", mym_directory, 1);
-        mxFree(mym_directory);
+        if (setenv("LIBMYSQL_PLUGIN_DIR", mym_directory, 1) != 0) {
+            mxFree(mym_directory);
+            mexErrMsgTxt("Unable to set LIBMYSQL_PLUGIN_DIR");
+        }
     #endif
-        
+
+    mxFree(mym_directory);
 
     // //Confirm Path
     // printf("Path:  %s\n", mym_directory); 
@@ -376,6 +379,25 @@ static void cleanupConnections() {
         }
         c[i].isopen = false;
     }
+}
+
+static void closeConnection(MYSQL*& conn, bool& isopen) {
+    if (conn != NULL)
+        mysql_close(conn);
+    conn = NULL;
+    isopen = false;
+}
+
+static void closeConnectionWithError(MYSQL*& conn, bool& isopen,
+                                     const char* errorId) {
+    char message[1024] = "Unknown MySQL connection error";
+    if (conn != NULL) {
+        const char* error = mysql_error(conn);
+        if (error != NULL && error[0] != '\0')
+            snprintf(message, sizeof(message), "%s", error);
+    }
+    closeConnection(conn, isopen);
+    mexErrMsgIdAndTxt(errorId, "%s", message);
 }
 
 /**********************************************************************
@@ -530,11 +552,8 @@ void mexFunction(int nlhs, mxArray*plhs[], int nrhs, const mxArray*prhs[]) {
         // OPEN A NEW CONNECTION
         ////////////////////////
         //  Close connection if it is open
-        if (isopen) {
-            mysql_close(conn);
-            isopen = false;
-            conn = NULL;
-        }
+        if (isopen || conn != NULL)
+            closeConnection(conn, isopen);
         //  Extract information from input arguments
         char*host = NULL;
         if (nrhs>=(jarg+2))
@@ -567,11 +586,11 @@ void mexFunction(int nlhs, mxArray*plhs[], int nrhs, const mxArray*prhs[]) {
         }
         else if (strstr (ssl_input,"{")) {
             mode_option = SSL_MODE_REQUIRED;
-            mexErrMsgIdAndTxt("mYm:TLS:InvalidStruct",
-                "Custom TLS struct definition not supported yet.");
+            closeConnectionWithError(conn, isopen, "mYm:TLS:InvalidStruct");
         }
 
-        mysql_options(conn, MYSQL_OPT_SSL_MODE, &mode_option);
+        if (mysql_options(conn, MYSQL_OPT_SSL_MODE, &mode_option) != 0)
+            closeConnectionWithError(conn, isopen, "mYm:MySQL:Options");
 
         if (nlhs<1) {
             mexPrintf("Connecting to  host = %s", (host) ? host : "localhost");
@@ -588,16 +607,16 @@ void mexFunction(int nlhs, mxArray*plhs[], int nrhs, const mxArray*prhs[]) {
         updateplugindir();
         //my_bool  my_true = true;
         //mysql_options(conn, MYSQL_OPT_RECONNECT, &my_true);
-        if (!mysql_real_connect(conn, host, user, pass, NULL, port, NULL, CLIENT_MULTI_STATEMENTS))
-            mexErrMsgIdAndTxt("MySQL:Error",
-                mysql_error(conn));
+        if (!mysql_real_connect(conn, host, user, pass, NULL, port, NULL,
+                                CLIENT_MULTI_STATEMENTS))
+            closeConnectionWithError(conn, isopen, "MySQL:Error");
         const char*c = mysql_stat(conn);
         if (c) {
             if (nlhs<1)
                 mexPrintf("%s\n", c);
         }
         else
-            mexErrMsgTxt(mysql_error(conn));
+            closeConnectionWithError(conn, isopen, "MySQL:Error");
         isopen = true;
         
         //  Now we are OK -- if he wants output, give him the cid
@@ -612,9 +631,7 @@ void mexFunction(int nlhs, mxArray*plhs[], int nrhs, const mxArray*prhs[]) {
         ////////////////////////
         if (isopen) {
             // only if open
-            mysql_close(conn);
-            isopen = false;
-            conn = NULL;
+            closeConnection(conn, isopen);
         }
     }
     else if (q==CLOSE_ALL) {
@@ -622,9 +639,7 @@ void mexFunction(int nlhs, mxArray*plhs[], int nrhs, const mxArray*prhs[]) {
         ////////////////////////
         for (int i = 0; i<MAXCONN; i++)
             if (c[i].isopen) {
-                mysql_close(c[i].conn);
-                c[i].conn = NULL;
-                c[i].isopen = false;
+                closeConnection(c[i].conn, c[i].isopen);
             }
     }
     else if (q==USE) {
@@ -633,8 +648,7 @@ void mexFunction(int nlhs, mxArray*plhs[], int nrhs, const mxArray*prhs[]) {
         if (!isopen)
             mexErrMsgTxt("Not connected");
         if (mysql_ping(conn)) {
-            isopen = false;
-            mexErrMsgTxt(mysql_error(conn));
+            closeConnectionWithError(conn, isopen, "MySQL:Error");
         }
         char*db = NULL;
         if (!strcasecmp(query, "use")) {
@@ -697,8 +711,7 @@ void mexFunction(int nlhs, mxArray*plhs[], int nrhs, const mxArray*prhs[]) {
                     // Only connection number zero is open
                     // Give simple report with no connection id #
                     if (mysql_ping(conn)) {
-                        isopen = false;
-                        mexErrMsgTxt(mysql_error(conn));
+                        closeConnectionWithError(conn, isopen, "MySQL:Error");
                     }
                     if (mysql_get_ssl_cipher(conn)) {ssl_status = "(encrypted)";} else ssl_status = "";
                     mexPrintf("Connected to %s Server version %s Client %s %s\n", mysql_get_host_info(conn), 
@@ -710,8 +723,8 @@ void mexFunction(int nlhs, mxArray*plhs[], int nrhs, const mxArray*prhs[]) {
                     for (int j = 0; j<MAXCONN; j++) {
                         if (c[j].isopen) {
                             if (mysql_ping(c[j].conn)) {
-                                c[j].isopen = false;
-                                mexPrintf("%2d:  %s\n", mysql_error(c[j].conn));
+                                closeConnection(c[j].conn, c[j].isopen);
+                                mexPrintf("%2d:  connection failed\n", j);
                                 continue;
                             }
                             if (mysql_get_ssl_cipher(c[j].conn)) {ssl_status = "(encrypted)";} else ssl_status = "";
@@ -732,12 +745,12 @@ void mexFunction(int nlhs, mxArray*plhs[], int nrhs, const mxArray*prhs[]) {
                 *pr = 1.;
             //return;
             else if (mysql_ping(conn)) {
-                isopen = false;
+                closeConnection(conn, isopen);
                 *pr = 2.;
                 //return;
             }
             else if (!mysql_stat(conn)) {
-                isopen = false;
+                closeConnection(conn, isopen);
                 *pr = 3.;
                 //return;
             }
@@ -750,8 +763,7 @@ void mexFunction(int nlhs, mxArray*plhs[], int nrhs, const mxArray*prhs[]) {
         if (!isopen)
             mexErrMsgTxt("Not connected");
         if (mysql_ping(conn)) {
-            isopen = false;
-            mexErrMsgTxt(mysql_error(conn));
+            closeConnectionWithError(conn, isopen, "MySQL:Error");
         }
         //******************PLACEHOLDER PROCESSING******************
         // global placeholders variables and constant
@@ -859,8 +871,8 @@ void mexFunction(int nlhs, mxArray*plhs[], int nrhs, const mxArray*prhs[]) {
                 pnq += po[i]-poq;
                 poq = po[i]+ps[i];
                 pnq += mysql_real_escape_string(conn, pnq, pd[i], plen[i]);
-                pd[i]=NULL;
                 mxFree(pd[i]);
+                pd[i]=NULL;
             }
             memcpy(pnq, poq, lengthOfQuery-(poq-query)+1);
             // replace the old query by the new one
@@ -966,7 +978,10 @@ void mexFunction(int nlhs, mxArray*plhs[], int nrhs, const mxArray*prhs[]) {
                 }
             }
             else
+            {
+                drainResults(conn);
                 mexErrMsgTxt(mysql_error(conn));
+            }
         }
         ulong nrow = (ulong)mysql_num_rows(res), nfield = mysql_num_fields(res);
         //  If he didn't ask for any output (nlhs = 0),
@@ -1067,7 +1082,9 @@ void mexFunction(int nlhs, mxArray*plhs[], int nrhs, const mxArray*prhs[]) {
                     mxSetCell(tmpPr, i, c);
                 } else {
                     tmpPr=mxGetField(plhs[0],0,f[j].name);
-                    mxArray *c = mxCreateString(hex2char(row[j], p_lengths[j]));
+                    char* text = hex2char(row[j], p_lengths[j]);
+                    mxArray *c = mxCreateString(text);
+                    mxFree(text);
                     mxSetCell(tmpPr, i, c);
                 }
             }
@@ -1196,7 +1213,7 @@ void mexFunction(int nlhs, mxArray*plhs[], int nrhs, const mxArray*prhs[]) {
                     for (unsigned i=0; i<nac; i++){
                         vec = mxCreateNumericMatrix(plen[i],1,mxUINT8_CLASS,mxREAL) ;
                         if (vec != NULL) {
-                            memcpy(mxGetPr(vec), pd[i], plen[i]) ;
+                            memcpy(mxGetData(vec), pd[i], plen[i]) ;
                             mxFree(pd[i]) ;
                             mxSetCell(cell_array_ptr,i,vec);
                         }
@@ -1214,6 +1231,11 @@ void mexFunction(int nlhs, mxArray*plhs[], int nrhs, const mxArray*prhs[]) {
                     mexErrMsgIdAndTxt("mYm:Serialization:CellAllocation",
                         "Unable to allocate cell matrix for output variables\n");
                 }
+            } else {
+                for (unsigned i = 0; i < nac; i++)
+                    mxFree(pd[i]);
+                mxFree(pd);
+                mxFree(plen);
             }
         }
     }
@@ -1253,39 +1275,22 @@ void mexFunction(int nlhs, mxArray*plhs[], int nrhs, const mxArray*prhs[]) {
     }
 }
 
-void removeWhiteSpaceAtTheBeginning(char* string) 
+void removeWhiteSpaceAtTheBeginning(char*& string)
 {
-    // Do a quick check at the start to see if any work needs to be done
-    if (!strlen(string) || !isspace(string[0])) 
-    {
-        // The first character is not an empty space thus just return the orignal string
+    if (string == NULL)
         return;
-    }
 
-    // There are some white spaces that needs to be removed
-    size_t currentStringIndex = 1; // Offset of 1 due to the check at the beginning
+    char* first = string;
+    while (*first != '\0' && isspace((unsigned char)*first))
+        ++first;
+    if (first == string)
+        return;
 
-    // Loop through the string until a none whitespace character is found
-    for (; string[currentStringIndex] != '\0'; currentStringIndex++) 
-    {
-        if (string[currentStringIndex] != ' ') 
-        {
-            break;
-        }
-    }
-
-    char* sanitizeString = (char*)mxCalloc(strlen(string), sizeof(char));
-    size_t sanitizeStringIndex = 0;
-    // Copy the rest of the string over
-    for (; string[currentStringIndex] != '\0'; currentStringIndex++) 
-    {
-        sanitizeString[sanitizeStringIndex] = string[currentStringIndex];
-        sanitizeStringIndex++;
-    }
-
-    // Replace the string
-    mxFree(string); // Free up the old string allocation
-    string = sanitizeString;
+    const size_t length = strlen(first);
+    char* sanitized = (char*)mxCalloc(length + 1, sizeof(char));
+    memcpy(sanitized, first, length + 1);
+    mxFree(string);
+    string = sanitized;
 }
 
 /**
@@ -1298,7 +1303,9 @@ bool isSubstringFountAtTheBeginningCaseInsenstive(const char* sourceString, cons
 {
     for (size_t i = 0; subString[i] != '\0'; i++) 
     {
-        if (tolower(sourceString[i]) != tolower(subString[i]))
+        if (sourceString[i] == '\0' ||
+            tolower((unsigned char)sourceString[i]) !=
+            tolower((unsigned char)subString[i]))
         {
             return false;
         }
@@ -1410,8 +1417,9 @@ char* serializeStruct(size_t &rnBytes, const mxArray *rpArray, const char *rpArg
     // free unused memory
     mxFree(pname);
     mxFree(fnl);
-    for (int i = 1; i<nelts; i++)
+    for (size_t i = 0; i<nelts*nfields; i++)
         mxFree(pser[i]);
+    mxFree(pser);
     mxFree(plen);
     return p_serial;
 }
@@ -1492,8 +1500,9 @@ char* serializeCell(size_t &rnBytes, const mxArray *rpArray, const char *rpArg, 
     }
 
     // free unused memory
-    for (int i = 1; i<nelts; i++)
+    for (int i = 0; i<nelts; i++)
         mxFree(pser[i]);
+    mxFree(pser);
     mxFree(plen);
     return p_serial;
 }
@@ -1686,11 +1695,12 @@ char* serializeString(size_t &rnBytes, const mxArray*rpArray, const char*rpArg, 
     else if (mxIsChar(rpArray)) {
         if ((n_dims!=2) || !((pdims[0]==1) || (pdims[1]==1)))
             mexErrMsgTxt("String placeholders only accept CHAR 1-by-M arrays or M-by-1!");
-        // matlab string
-        p_buf = (char*)mxCalloc(length+1, sizeof(char));
+        // mxArrayToString returns UTF-8, which is the representation expected
+        // by the MySQL client library.
         p_buf = mxArrayToString(rpArray);
-        p_buf = char2hex(p_buf, strlen(p_buf), length + 1);
-        rnBytes = length;
+        if (p_buf == NULL)
+            mexErrMsgTxt("Unable to convert MATLAB text to UTF-8");
+        rnBytes = strlen(p_buf);
     }
     else if (mxIsNumeric(rpArray)||mxIsLogical(rpArray)) {
         // matlab scalar
@@ -2070,34 +2080,51 @@ mxArray* deserialize(const char* rpSerial, const size_t rlength) {
         p_res = mxCreateNumericArray(0, 0, mxCHAR_CLASS, mxREAL);
         return p_res;
     }
-    if (strcmp(p_serial, ZLIB_ID)==0) {
-        p_serial = p_serial+LEN_ZLIB_ID+1;
+    if (length >= LEN_ZLIB_ID + 1 &&
+        memcmp(p_serial, ZLIB_ID, LEN_ZLIB_ID) == 0 &&
+        p_serial[LEN_ZLIB_ID] == '\0') {
+        const size_t headerLength = LEN_ZLIB_ID + 1 + sizeof(_uint64);
+        if (length < headerLength)
+            return mxCreateNumericMatrix(0, 0, mxUINT8_CLASS, mxREAL);
+
+        p_serial = p_serial + LEN_ZLIB_ID + 1;
         // read the length in bytes
         mwSize len;
-        size_t lenLong;
         READ_UINT(&len, p_serial);
-        char* p_cmp = (char*)mxCalloc(len, sizeof(char));
-        lenLong=len;
+        p_cmp = (char*)mxCalloc(len, sizeof(char));
         try {
-            uLongf lenLong32 = (lenLong & 0xFFFFFFFF);
-            int res = uncompress((Bytef*)p_cmp, &lenLong32, (const Bytef*)p_serial, length);
+            uLongf decompressedLength = (uLongf)len;
+            const size_t compressedLength = length - headerLength;
+            int res = uncompress((Bytef*)p_cmp, &decompressedLength,
+                                 (const Bytef*)p_serial, compressedLength);
             if (res==Z_OK) {
                 used_compression = true;
                 p_serial = p_cmp;
-                length = len;
+                length = (size_t)decompressedLength;
             }
-            else
+            else {
+                mxFree(p_cmp);
+                p_cmp = NULL;
                 p_serial = rpSerial;
+            }
         }
         catch(...) {
+            mxFree(p_cmp);
+            p_cmp = NULL;
             p_serial = rpSerial;
         }
     }
-    if (p_serial != 0 && !strcasecmp(p_serial, "dj0"))
+    if (length >= 3 && strncasecmp(p_serial, "dj0", 3) == 0)
         mexErrMsgIdAndTxt("mYm:CrossPlatform:Compatibility",
             "Blob data ingested utilizing DataJoint-Python version >=0.12 not yet supported.");
-    if (strcmp(p_serial, ID_MATLAB)==0) {
+    if (length >= LEN_ID_MATLAB + 1 &&
+        memcmp(p_serial, ID_MATLAB, LEN_ID_MATLAB) == 0 &&
+        p_serial[LEN_ID_MATLAB] == '\0') {
+        const size_t headerLength = LEN_ID_MATLAB + 1;
+        if (length < headerLength)
+            return mxCreateNumericMatrix(0, 0, mxUINT8_CLASS, mxREAL);
         p_serial = p_serial+LEN_ID_MATLAB+1;
+        length -= headerLength;
         try {
           could_not_deserialize = false;
           if (*p_serial==ID_ARRAY)
@@ -2132,78 +2159,79 @@ mxArray* deserialize(const char* rpSerial, const size_t rlength) {
         mxFree(p_cmp);
     return p_res;
 }
-char *hex2char(char *original_val, const size_t char_length) {
-    const uint8_t *pnt = (uint8_t *)original_val;
-    uint8_t *result_pnt = new uint8_t[char_length*4];
-    unsigned int offset = 0;
-    for( unsigned int a = 0; a < char_length; ++a )
-    {
-        if     (pnt[a]<=0x7F) {
-            result_pnt[a+offset] = pnt[a];
-        }
-        else if(pnt[a]<=0x7FF) {
-            result_pnt[a+offset] = ((pnt[a]>>6) + 0xC0);
-            result_pnt[a+offset+1] = ((pnt[a] & 0x3F) + 0x80);
-            offset += 1;
-        }
-        else if(0xD800<=pnt[a] && pnt[a]<=0xDFFF) {
-            mexErrMsgIdAndTxt("mYm:Deserialization:UTF8",
-                "Invalid block of UTF8 detected.");
-        } //invalid block of utf8
-        else if(pnt[a]<=0xFFFF) {
-            result_pnt[a+offset] = ((pnt[a]>>12) + 0xE0);
-            result_pnt[a+offset+1] = (((pnt[a]>>6) & 0x3F) + 0x80);
-            result_pnt[a+offset+2] = ((pnt[a] & 0x3F) + 0x80);
-            offset += 2;
-        }
-        else if(pnt[a]<=0x10FFFF) {
-            result_pnt[a+offset] = ((pnt[a]>>18) + 0xF0);
-            result_pnt[a+offset+1] = (((pnt[a]>>12) & 0x3F) + 0x80);
-            result_pnt[a+offset+2] = (((pnt[a]>>6) & 0x3F) + 0x80);
-            result_pnt[a+offset+3] = ((pnt[a] & 0x3F) + 0x80);
-            offset += 3;
+static bool isValidUtf8(const unsigned char* value, const size_t length) {
+    for (size_t i = 0; i < length; ++i) {
+        const unsigned char c = value[i];
+        if (c <= 0x7F)
+            continue;
+
+        if (c >= 0xC2 && c <= 0xDF) {
+            if (i + 1 >= length || value[i + 1] < 0x80 || value[i + 1] > 0xBF)
+                return false;
+            ++i;
+        } else if (c == 0xE0) {
+            if (i + 2 >= length || value[i + 1] < 0xA0 || value[i + 1] > 0xBF ||
+                value[i + 2] < 0x80 || value[i + 2] > 0xBF)
+                return false;
+            i += 2;
+        } else if ((c >= 0xE1 && c <= 0xEC) || (c >= 0xEE && c <= 0xEF)) {
+            if (i + 2 >= length || value[i + 1] < 0x80 || value[i + 1] > 0xBF ||
+                value[i + 2] < 0x80 || value[i + 2] > 0xBF)
+                return false;
+            i += 2;
+        } else if (c == 0xED) {
+            if (i + 2 >= length || value[i + 1] < 0x80 || value[i + 1] > 0x9F ||
+                value[i + 2] < 0x80 || value[i + 2] > 0xBF)
+                return false;
+            i += 2;
+        } else if (c == 0xF0) {
+            if (i + 3 >= length || value[i + 1] < 0x90 || value[i + 1] > 0xBF ||
+                value[i + 2] < 0x80 || value[i + 2] > 0xBF ||
+                value[i + 3] < 0x80 || value[i + 3] > 0xBF)
+                return false;
+            i += 3;
+        } else if (c >= 0xF1 && c <= 0xF3) {
+            if (i + 3 >= length || value[i + 1] < 0x80 || value[i + 1] > 0xBF ||
+                value[i + 2] < 0x80 || value[i + 2] > 0xBF ||
+                value[i + 3] < 0x80 || value[i + 3] > 0xBF)
+                return false;
+            i += 3;
+        } else if (c == 0xF4) {
+            if (i + 3 >= length || value[i + 1] < 0x80 || value[i + 1] > 0x8F ||
+                value[i + 2] < 0x80 || value[i + 2] > 0xBF ||
+                value[i + 3] < 0x80 || value[i + 3] > 0xBF)
+                return false;
+            i += 3;
+        } else {
+            return false;
         }
     }
-    result_pnt[char_length+offset]= 0x00;
-    return (char *)result_pnt;
+    return true;
 }
-char *char2hex(char *original_val, const size_t vlength, const size_t char_length) {
-    unsigned int idx = 0;
-    unsigned int curr_length = 0;
-    unsigned char u0,u1,u2,u3;
-    uint8_t *result_pnt = new uint8_t[char_length];
-    for(unsigned int a = 0; a < vlength;)
-    {
-        u0 = original_val[a];
-        curr_length = 1;
-        if (((u0 & 0xF8) == 0xF0) && ((a + curr_length + 3) <= vlength)) {
-            curr_length += 3;
-            u1 = original_val[a+1];
-            u2 = original_val[a+2];
-            u3 = original_val[a+3];
-            result_pnt[idx] = (((u0-0xF0)<<18) + ((u1-0x80)<<12) + ((u2-0x80)<<6) + (u3-0x80));
-        }
-        else if (((u0 & 0xF0) == 0xE0) && ((a + curr_length + 2) <= vlength)) {
-            curr_length += 2;
-            u1 = original_val[a+1];
-            u2 = original_val[a+2];
-            if (u0 == 0xED && (u1 & 0xA0) == 0xA0) {
-                mexErrMsgIdAndTxt("mYm:Serialization:UTF8",
-                    "Invalid block of UTF8 detected.");
-            }
-            result_pnt[idx] = (((u0-0xE0)<<12) + ((u1-0x80)<<6) + (u2-0x80));
-        }
-        else if (((u0 & 0xE0) == 0xC0) && ((a + curr_length + 1) <= vlength)) {
-            curr_length++;
-            u1 = original_val[a+1];
-            result_pnt[idx] = (((u0-0xC0)<<6) + (u1-0x80));
-        }
-        else {
-            result_pnt[idx] = u0;
-        }
-        idx++;
-        a += curr_length;
+
+char *hex2char(const char *original_val, const size_t char_length) {
+    if (original_val == NULL)
+        return (char*)mxCalloc(1, sizeof(char));
+
+    const unsigned char* value = (const unsigned char*)original_val;
+    if (isValidUtf8(value, char_length)) {
+        char* result = (char*)mxCalloc(char_length + 1, sizeof(char));
+        memcpy(result, original_val, char_length);
+        return result;
     }
-    result_pnt[idx]= 0x00;
-    return (char*)result_pnt;
+
+    // Legacy mym stored each non-ASCII MATLAB code point as one byte. Decode
+    // that representation to UTF-8 while retaining current UTF-8 strings.
+    char* result = (char*)mxCalloc(2 * char_length + 1, sizeof(char));
+    size_t output_length = 0;
+    for (size_t i = 0; i < char_length; ++i) {
+        if (value[i] < 0x80) {
+            result[output_length++] = (char)value[i];
+        } else {
+            result[output_length++] = (char)(0xC0 | (value[i] >> 6));
+            result[output_length++] = (char)(0x80 | (value[i] & 0x3F));
+        }
+    }
+    result[output_length] = '\0';
+    return result;
 }

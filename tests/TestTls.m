@@ -67,9 +67,14 @@ classdef TestTls < Prep
             % test exception on require TLS
             st = dbstack;
             disp(['---------------' st(1).name '---------------']);
+            reject_user = getenv('DJ_TEST_TLS_REJECT_USER');
+            reject_password = getenv('DJ_TEST_TLS_REJECT_PASSWORD');
+            assumeTrue(testCase, ~isempty(reject_user) && ~isempty(reject_password), ...
+                ['Set DJ_TEST_TLS_REJECT_USER and DJ_TEST_TLS_REJECT_PASSWORD ' ...
+                'to run the account-level TLS rejection test.']);
             try
                 curr_conn = mym(-1, 'open', testCase.CONN_INFO.host, ...
-                    'djssl', 'djssl', 'false');
+                    reject_user, reject_password, 'false');
                 testCase.verifyTrue(false);
                 mym(curr_conn, 'close');
             catch ME

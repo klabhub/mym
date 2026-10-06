@@ -91,3 +91,10 @@ MYSQL_TAG=5.7
 2. Navigate in MATLAB tree browser to saved toolbox file
 3. Right-Click and Select *Install*
 4. Select *Install*
+
+### MEX API compatibility
+
+The MEX source uses MATLAB's separate-complex API (`-R2017b`), including
+functions such as `mxGetPr` and `mxGetImagData`. When compiling with MATLAB
+R2018a or newer, use `-R2017b`; do not combine it with `-largeArrayDims`,
+because `-R2017b` already enables the large-array API.

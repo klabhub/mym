@@ -1,14 +1,11 @@
 classdef Prep < matlab.unittest.TestCase
     % Setup and teardown for tests.
     properties (Constant)
-        CONN_INFO_ROOT = struct(...
-            'host', getenv('DJ_HOST'), ...
-            'user', getenv('DJ_USER'), ...
-            'password', getenv('DJ_PASS'));
         CONN_INFO = struct(...
             'host', getenv('DJ_TEST_HOST'), ...
             'user', getenv('DJ_TEST_USER'), ...
             'password', getenv('DJ_TEST_PASSWORD'));
+        % Keep all test schemas within the permitted dj* namespace.
         PREFIX = 'djtest';
     end
 
@@ -17,76 +14,15 @@ classdef Prep < matlab.unittest.TestCase
             disp('---------------INIT---------------');
             clear functions;
             feature('DefaultCharacterSet','UTF-8');
-            ghtb.install('guzman-raphael/compareVersions', 'override', true);
 
             disp(mym('version'));
-            curr_conn = mym(-1, 'open', testCase.CONN_INFO_ROOT.host, ...
-                testCase.CONN_INFO_ROOT.user, testCase.CONN_INFO_ROOT.password, ...
-                'false');
-            
-            res = mym(curr_conn, 'select @@version as version');
-            if compareVersions(res.version,'5.8')
-                cmd = {...
-                'CREATE USER IF NOT EXISTS ''datajoint''@''%%'' '
-                'IDENTIFIED BY ''datajoint'';'
-                };
-                mym(curr_conn, sprintf('%s',cmd{:}));
-
-                cmd = {...
-                ['GRANT ALL PRIVILEGES ON `' testCase.PREFIX '%%`.* TO ''datajoint''@''%%'';']
-                };
-                mym(curr_conn, sprintf('%s',cmd{:}));
-
-                cmd = {...
-                'CREATE USER IF NOT EXISTS ''djview''@''%%'' '
-                'IDENTIFIED BY ''djview'';'
-                };
-                mym(curr_conn, sprintf('%s',cmd{:}));
-
-                cmd = {...
-                ['GRANT SELECT ON `' testCase.PREFIX '%%`.* TO ''djview''@''%%'';']
-                };
-                mym(curr_conn, sprintf('%s',cmd{:}));
-
-                cmd = {...
-                'CREATE USER IF NOT EXISTS ''djssl''@''%%'' '
-                'IDENTIFIED BY ''djssl'' '
-                'REQUIRE SSL;'
-                };
-                mym(curr_conn, sprintf('%s',cmd{:}));
-
-                cmd = {...
-                ['GRANT SELECT ON `' testCase.PREFIX '%%`.* TO ''djssl''@''%%'';']
-                };
-                mym(curr_conn, sprintf('%s',cmd{:}));
-            else
-                cmd = {...
-                ['GRANT ALL PRIVILEGES ON `' testCase.PREFIX '%%`.* TO ''datajoint''@''%%'' ']
-                'IDENTIFIED BY ''datajoint'';'
-                };
-                mym(curr_conn, sprintf('%s',cmd{:}));
-
-                cmd = {...
-                ['GRANT SELECT ON `' testCase.PREFIX '%%`.* TO ''djview''@''%%'' ']
-                'IDENTIFIED BY ''djview'';'
-                };
-                mym(curr_conn, sprintf('%s',cmd{:}));
-
-                cmd = {...
-                ['GRANT SELECT ON `' testCase.PREFIX '%%`.* TO ''djssl''@''%%'' ']
-                'IDENTIFIED BY ''djssl'' '
-                'REQUIRE SSL;'
-                };
-                mym(curr_conn, sprintf('%s',cmd{:}));
-            end
-            mym(curr_conn, 'close');
         end
     end
     methods (TestClassTeardown)
         function dispose(testCase)
             disp('---------------DISP---------------');          
-            curr_conn = mym(-1, 'open', testCase.CONN_INFO_ROOT.host, ...
-                testCase.CONN_INFO_ROOT.user, testCase.CONN_INFO_ROOT.password, ...
+            curr_conn = mym(-1, 'open', testCase.CONN_INFO.host, ...
+                testCase.CONN_INFO.user, testCase.CONN_INFO.password, ...
                 'false');
 
             mym(curr_conn, 'SET FOREIGN_KEY_CHECKS=0;');
@@ -100,12 +36,6 @@ classdef Prep < matlab.unittest.TestCase
             end
             mym(curr_conn, 'SET FOREIGN_KEY_CHECKS=1;');
 
-            cmd = {...
-            'DROP USER ''datajoint''@''%%'';'
-            'DROP USER ''djview''@''%%'';'
-            'DROP USER ''djssl''@''%%'';'
-            };
-            mym(curr_conn, sprintf('%s',cmd{:}));
             mym(curr_conn, 'close');
         end
     end

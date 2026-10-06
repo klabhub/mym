@@ -53,6 +53,7 @@
 
 // We need a platform- and compiler-independent (rofl) fixed size 64 bit integer
 #include <stdint.h>
+#include <string.h>
 #ifdef __GNUC__
 	#include <sys/types.h>
 	#define _uint64 uint64_t
@@ -79,11 +80,16 @@ const bool debug = false;  //  turn on information messages
 	   These are a BSD addition and are also defined on Linux, but not on every OS, 
 	   in particular Windows. The two "inline" declarations below fix this problem. If
 	   you get errors on other platforms, move the declarations outside the WIN32 block */
-	inline int strcasecmp(const char *s1, const char *s2) { return strcmp(s1, s2); }
-	inline int strncasecmp(const char *s1, const char *s2, size_t n) { return strncmp(s1, s2, n); }
-	// In windows, strcasecmp and strcasestr dont do a case insensitive execution, so user must
-	// make sure that everything is case sensitive
-	inline const char * strcasestr(const char *s1, const char *s2) { return strstr(s1, s2); }
+	inline int strcasecmp(const char *s1, const char *s2) { return _stricmp(s1, s2); }
+	inline int strncasecmp(const char *s1, const char *s2, size_t n) { return _strnicmp(s1, s2, n); }
+	inline const char * strcasestr(const char *s1, const char *s2) {
+		if (*s2 == '\0')
+			return s1;
+		for (const char* p = s1; *p != '\0'; ++p)
+			if (_strnicmp(p, s2, strlen(s2)) == 0)
+				return p;
+		return NULL;
+	}
 #endif
 #include <mysql.h>  //  Definitions for MySQL client API
 
@@ -112,7 +118,7 @@ unsigned long min_mysql_escape(char* rpout, const char* rpin, const unsigned lon
 void safe_read_64uint(mwSize* dst, _uint64* src, size_t n);
 void safe_read_32uint(mwSize* dst, _uint32* src, size_t n);
 bool isSubstringFountAtTheBeginningCaseInsenstive(const char* sourceString, const char* subString);
-void removeWhiteSpaceAtTheBeginning(char* string);
+void removeWhiteSpaceAtTheBeginning(char*& string);
 //void safe_read_64uint(mwSize* dst, unsigned __int64* src, size_t n);
 
 /**********************************************************************
@@ -192,7 +198,6 @@ enum CMD_FLAGS {
 
 static void getSerialFct(const char* rpt, const mxArray* rparg, pfserial& rpf, bool& rpec);
 mxArray* deserialize(const char* rpSerial, const size_t rlength);
-char *hex2char(char *original_val, const size_t vlength);
-char *char2hex(char *original_val, const size_t vlength, const size_t char_length);
+char *hex2char(const char *original_val, const size_t vlength);
 
 #endif // MY_MAT_H
